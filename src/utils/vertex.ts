@@ -17,62 +17,13 @@ const vertexNDK = new NDK({
 });
 
 // Connect to Vertex relay
-export const connectToVertex = async (): Promise<boolean> => {
-  console.log("Attempting to connect to Vertex relay...");
-  
+export const connectToVertex = async () => {
   try {
-    // We can't directly check active connections here, so we'll just add Vertex relay URL
-    // to the allowlist and request a connection to it specifically
-    // The actual connection happens in the NDK instance created at the authentication level
-    
-    // Check if window and browser extension is available (client-side only)
-    if (typeof window !== 'undefined') {
-      // Use a more direct approach to see if the relay is reachable
-      try {
-        // Try to establish a direct WebSocket connection to Vertex relay
-        const vertexSocket = new WebSocket('wss://relay.vertexlab.io');
-        
-        // Set a timeout since WebSocket connect doesn't support AbortController
-        const timeoutId = setTimeout(() => {
-          console.log("WebSocket connection to Vertex relay timed out");
-          vertexSocket.close();
-        }, 5000);
-        
-        // Create a promise that resolves when the socket opens or errors
-        const socketPromise = new Promise<boolean>((resolve) => {
-          vertexSocket.onopen = () => {
-            console.log("Direct WebSocket connection to Vertex relay established");
-            clearTimeout(timeoutId);
-            vertexSocket.close(); // Close it since NDK will handle actual communication
-            resolve(true);
-          };
-          
-          vertexSocket.onerror = (error) => {
-            console.error("Direct WebSocket connection to Vertex relay failed:", error);
-            clearTimeout(timeoutId);
-            resolve(false);
-          };
-        });
-        
-        const isConnected = await socketPromise;
-        
-        if (isConnected) {
-          console.log("✅ Vertex relay is reachable");
-          return true;
-        } else {
-          console.error("❌ Could not connect to Vertex relay - trust scores may not be available");
-          return false;
-        }
-      } catch (error) {
-        console.error("Error testing Vertex relay connection:", error);
-      }
-    }
-    
-    // If browser check fails or we're in server environment, we just assume it might work
-    console.log("Vertex relay connection setup completed (indirect)");
+    await vertexNDK.connect();
+    console.log('Connected to Vertex relay');
     return true;
   } catch (error) {
-    console.error("Fatal error connecting to Vertex relay:", error);
+    console.error('Failed to connect to Vertex relay:', error);
     return false;
   }
 };
@@ -80,15 +31,10 @@ export const connectToVertex = async (): Promise<boolean> => {
 // Convert hex pubkey to npub
 export const hexToNpub = (hex: string): string => {
   try {
-    // Return early if hex is undefined or empty
-    if (!hex) {
-      console.warn('Empty or undefined hex value provided to hexToNpub');
-      return 'invalid-hex';
-    }
     return nip19.npubEncode(hex);
   } catch (error) {
     console.error('Failed to convert hex to npub:', error);
-    return hex || 'invalid-hex';
+    return hex;
   }
 };
 

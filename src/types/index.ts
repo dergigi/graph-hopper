@@ -1,4 +1,4 @@
-import { NDKUser, NDKEvent, NDKSubscription } from '@nostr-dev-kit/ndk';
+import { NDKUser, NDKEvent } from '@nostr-dev-kit/ndk';
 import NDK from '@nostr-dev-kit/ndk';
 import { SigmaNodeEventPayload } from 'react-sigma';
 
@@ -78,21 +78,17 @@ export interface GraphControlsProps {
 export interface GraphContextType {
   graph: GraphData;
   selectedNode: GraphNode | null;
-  setSelectedNode: (node: GraphNode | null) => Promise<void>;
+  setSelectedNode: (node: GraphNode | null) => void;
   loading: boolean;
   error: string | null;
-  loadFollowersForNode: (pubkey: string) => Promise<void | (() => void)>;
+  loadFollowersForNode: (nodeId: string) => Promise<void>;
   currentUserPubkey: string | null;
   userNotes: NDKEvent[];
   isLoadingNotes: boolean;
   notesError: string | null;
   isLoadingTrustScores: boolean;
-  getTrustScore?: (pubkey: string) => number | undefined;
-  formatTrustScore: (score: number) => number;
+  getTrustScore: (pubkey: string) => number | undefined;
   navigationStack: GraphNode[];
-  isConnectedToRelays: boolean;
-  isConnectedToVertex: boolean;
-  activeSubscriptions: NDKSubscription[];
 }
 
 export interface NodeInteractionHandlerProps {

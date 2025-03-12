@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { NodeDetails } from './NodeDetails';
 import { useGraph } from './GraphProvider';
 import { Footer } from './Footer';
@@ -15,55 +15,34 @@ type SimNode = GraphNode & d3.SimulationNodeDatum & {
 // Extended type for simulation links
 type SimLink = d3.SimulationLinkDatum<SimNode> & GraphEdge;
 
-// Add a utility function near the top of the file, after imports
-const safeHexToNpub = (id: string | undefined): string => {
-  try {
-    if (!id) {
-      console.warn('Empty or undefined id provided to safeHexToNpub');
-      return 'invalid-id';
-    }
-    return hexToNpub(id);
-  } catch (error) {
-    console.error('Error in safeHexToNpub:', error);
-    return 'invalid-id';
-  }
-};
-
 export const GraphVisualization = () => {
   const { 
-    graph, 
+    graph: graphData, 
     selectedNode, 
     setSelectedNode, 
     loadFollowersForNode,
     currentUserPubkey,
-    formatTrustScore,
-    navigationStack,
     userNotes,
     isLoadingNotes,
     notesError,
-    isLoadingTrustScores
+    isLoadingTrustScores,
+    navigationStack
   } = useGraph();
-
-  // Convert to GraphData type for D3 visualization
-  const graphData = graph || { nodes: [], edges: [] };
   
   // Track whether the component is initially rendering
-  const isFirstRenderRef = useRef<boolean>(true); // Use ref instead of state to avoid re-renders
+  const [isInitialRender, setIsInitialRender] = useState(true);
   
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   
-  // Add ref for tracking graph hash to prevent unnecessary updates
-  const lastGraphHashRef = useRef<string>('');
-  
-  // Debug the graph data without causing renders
+  // Debug the graph data
   useEffect(() => {
     console.log("Graph data updated:", {
       nodes: graphData.nodes.length,
       edges: graphData.edges.length,
       currentUserPubkey,
-      isFirstRender: isFirstRenderRef.current
+      isInitialRender
     });
     
     // Check if container is available
@@ -82,60 +61,23 @@ export const GraphVisualization = () => {
     } else {
       console.warn("SVG ref is not available");
     }
-  }, [graphData, currentUserPubkey]);
+  }, [graphData, currentUserPubkey, isInitialRender]);
   
-  // Center on current user when graph is first created - separate effect to avoid re-renders
-  useEffect(() => {
-    if (currentUserPubkey && isFirstRenderRef.current && graphData.nodes.length > 0) {
-      console.log("First render with data, will center on current user", currentUserPubkey);
-      
-      // Set first render flag to false to prevent this from running again
-      isFirstRenderRef.current = false;
-      
-      // Allow time for D3 to initialize before trying to center
-      setTimeout(() => {
-        if (!svgRef.current || !containerRef.current || !zoomRef.current) return;
-        
-        // Find current user node
-        const currentUserNode = graphData.nodes.find(node => node.id === currentUserPubkey);
-        if (!currentUserNode || currentUserNode.x === undefined || currentUserNode.y === undefined) {
-          console.warn("Cannot center on current user - position unknown");
-          return;
-        }
-        
-        const width = containerRef.current.clientWidth;
-        const height = containerRef.current.clientHeight;
-        
-        console.log("Centering on current user node", {
-          x: currentUserNode.x, 
-          y: currentUserNode.y
-        });
-        
-        const scale = 1.5; // Slightly zoomed in
-        const translateX = width / 2 - currentUserNode.x * scale;
-        const translateY = height / 2 - currentUserNode.y * scale;
-        
-        // Apply zoom transform
-        d3.select(svgRef.current)
-          .transition()
-          .duration(750)
-          .call(
-            zoomRef.current.transform,
-            d3.zoomIdentity.translate(translateX, translateY).scale(scale)
-          );
-      }, 500);
-    }
-  }, [currentUserPubkey, graphData.nodes]);
-  
-  // Handle node selection with proper typing
+  // Handle node selection
   const handleNodeSelect = useCallback(async (nodeId: string, nodeX?: number, nodeY?: number) => {
-    if (!graphData.nodes.length) return;
+    // Don't reload if it's the same node
+    if (selectedNode && selectedNode.id === nodeId) {
+      return;
+    }
     
-    // Find the clicked node
+    console.log("Selecting node:", nodeId, {x: nodeX, y: nodeY});
+    
+    // Find the node in the graph
     const clickedNode = graphData.nodes.find(node => node.id === nodeId);
-    if (!clickedNode) return;
-    
-    console.log("Selecting node:", clickedNode);
+    if (!clickedNode) {
+      console.warn("Node not found in graph:", nodeId);
+      return;
+    }
     
     // Set the selected node and load notes (handled in the context now)
     setSelectedNode(clickedNode);
@@ -202,65 +144,18 @@ export const GraphVisualization = () => {
     setSelectedNode(null);
   };
   
-  // D3 graph visualization - stabilized to prevent constant refreshing
+  // D3 graph visualization
   useEffect(() => {
     console.log("Running D3 graph visualization effect");
     
-    if (!svgRef.current || !containerRef.current) {
-      console.warn("Skipping D3 visualization - missing refs", {
+    if (!svgRef.current || !containerRef.current || graphData.nodes.length === 0) {
+      console.warn("Skipping D3 visualization - missing refs or graph data", {
         hasSvgRef: !!svgRef.current,
-        hasContainerRef: !!containerRef.current
+        hasContainerRef: !!containerRef.current,
+        nodeCount: graphData.nodes.length
       });
       return;
     }
-    
-    // Check if we have graph data
-    if (graphData.nodes.length === 0) {
-      console.log("No graph data available, showing placeholder");
-      
-      // Clear any existing graph
-      d3.select(svgRef.current).selectAll("*").remove();
-      
-      const width = containerRef.current.clientWidth;
-      const height = containerRef.current.clientHeight;
-      
-      // Create an SVG element for the placeholder
-      const svg = d3.select(svgRef.current)
-        .attr("width", width)
-        .attr("height", height)
-        .attr("viewBox", [0, 0, width, height]);
-      
-      // Add a placeholder message
-      svg.append("text")
-        .attr("x", width / 2)
-        .attr("y", height / 2)
-        .attr("text-anchor", "middle")
-        .attr("dominant-baseline", "middle")
-        .attr("fill", "currentColor")
-        .attr("class", "text-lg text-gray-500 dark:text-gray-400")
-        .text("Initializing your Nostr graph...");
-      
-      return;
-    }
-    
-    // Skip unnecessary updates - use a JSON hash to compare graph states
-    const graphHash = JSON.stringify({
-      nodeIds: graphData.nodes.map(n => n.id).sort().join(','),
-      edgeIds: graphData.edges.map(e => e.id).sort().join(','),
-      selectedId: selectedNode?.id || 'none'
-    });
-    
-    // If the graph hasn't changed (same nodes, edges, and selection), skip update
-    // Only add this optimization after initial render
-    if (!isFirstRenderRef.current && graphHash === lastGraphHashRef.current) {
-      console.log("Graph hasn't changed, skipping D3 update");
-      return;
-    }
-    
-    // Update the hash reference
-    lastGraphHashRef.current = graphHash;
-    
-    // If we get here, we have graph data to visualize
     
     // Calculate trust score color based on value
     const getScoreColor = (score: number): string => {
@@ -288,7 +183,7 @@ export const GraphVisualization = () => {
     const nodeObjects = graphData.nodes.map(node => ({
       ...node,
       // Store the npub version of the ID for display
-      npub: safeHexToNpub(node.id),
+      npub: hexToNpub(node.id),
       // Initialize D3 simulation properties with explicit positioning
       x: node.x !== undefined ? node.x : width / 2 + (Math.random() - 0.5) * 200,
       y: node.y !== undefined ? node.y : height / 2 + (Math.random() - 0.5) * 200,
@@ -342,11 +237,7 @@ export const GraphVisualization = () => {
         .force("charge", d3.forceManyBody().strength(-700))
         .force("center", d3.forceCenter(width / 2, height / 2))
         .force("x", d3.forceX(width / 2).strength(0.1))
-        .force("y", d3.forceY(height / 2).strength(0.1))
-        // Reduce the number of iterations to make it less jumpy
-        .alphaDecay(0.05) // Faster convergence
-        .alpha(0.3) // Start with lower energy
-        .alphaTarget(0); // Target zero movement
+        .force("y", d3.forceY(height / 2).strength(0.1));
       
       console.log("D3 simulation created");
       
@@ -434,10 +325,7 @@ export const GraphVisualization = () => {
         .attr("dy", ".35em")
         .attr("fill", "white")
         .attr("pointer-events", "none")
-        .text(d => {
-          const label = d.label || 'U';
-          return label.charAt(0).toUpperCase();
-        });
+        .text(d => d.label.charAt(0).toUpperCase());
       
       // Add trust score badges to nodes
       node.append("g")
@@ -457,7 +345,7 @@ export const GraphVisualization = () => {
               .attr("fill", "white")
               .attr("font-size", "10px")
               .attr("font-weight", "bold")
-              .text(formatTrustScore(trustScore));
+              .text(Math.round(trustScore * 10) / 10);
           }
         });
       
@@ -477,10 +365,8 @@ export const GraphVisualization = () => {
       // Add title with full npub for hover tooltip
       node.append("title")
         .text(d => {
-          const label = d.label || 'Unknown';
-          const npub = d.npub || 'invalid-id';
-          const score = d.trustScore !== undefined ? ` (Trust Score: ${formatTrustScore(d.trustScore)})` : '';
-          return `${label}\n${npub}${score}`;
+          const score = d.trustScore !== undefined ? ` (Trust Score: ${Math.round(d.trustScore * 10) / 10})` : '';
+          return `${d.label}\n${d.npub}${score}`;
         });
       
       // Add selection ring to highlight the selected node
@@ -566,6 +452,38 @@ export const GraphVisualization = () => {
           .attr("transform", d => `translate(${d.x || 0}, ${d.y || 0})`);
       });
       
+      // Center on current user when graph is first created
+      if (currentUserPubkey && isInitialRender) {
+        console.log("First render, attempting to center on current user", currentUserPubkey);
+        setIsInitialRender(false);
+        const currentUserNodes = node.filter(d => d.id === currentUserPubkey);
+        if (currentUserNodes.size() > 0) {
+          console.log("Found current user node in graph");
+          const userData = currentUserNodes.datum();
+          if (userData && userData.x !== undefined && userData.y !== undefined) {
+            // Use a small delay to allow the graph to settle first
+            setTimeout(() => {
+              console.log("Centering on current user node", {
+                x: userData.x, 
+                y: userData.y
+              });
+              const scale = 1.5; // Slightly zoomed in
+              const translateX = width / 2 - (userData.x ?? 0) * scale;
+              const translateY = height / 2 - (userData.y ?? 0) * scale;
+              
+              svg.transition()
+                .duration(750)
+                .call(
+                  zoom.transform,
+                  d3.zoomIdentity.translate(translateX, translateY).scale(scale)
+                );
+            }, 500);
+          }
+        } else {
+          console.warn("Current user node not found in graph");
+        }
+      }
+      
       // Double-click on background to reset zoom
       svg.on("dblclick.zoom", () => {
         svg.transition()
@@ -575,12 +493,6 @@ export const GraphVisualization = () => {
             d3.zoomIdentity.translate(0, 0).scale(1)
           );
       });
-      
-      // Pause simulation after a short time to stabilize the graph
-      setTimeout(() => {
-        console.log("Pausing simulation to stabilize graph");
-        simulation.alphaTarget(0).alpha(0).stop();
-      }, 3000);
       
       // Add debug outline to svg container
       svg.append("rect")
@@ -599,7 +511,7 @@ export const GraphVisualization = () => {
     } catch (error) {
       console.error("Error in D3 graph visualization:", error);
     }
-  }, [graphData, selectedNode, handleNodeSelect, currentUserPubkey]);
+  }, [graphData, selectedNode, handleNodeSelect, currentUserPubkey, isInitialRender]);
   
   if (graphData.nodes.length === 0) {
     console.log("No graph data available, showing placeholder");
@@ -623,17 +535,15 @@ export const GraphVisualization = () => {
   
   // Sort other nodes by trust score (highest first)
   const sortedOtherNodes = graphData.nodes
-    .filter(node => node && node.id !== currentUserPubkey) // Add null check
+    .filter(node => node.id !== currentUserPubkey)
     .sort((a, b) => {
       // First by trust score (high to low)
       const scoreA = a.trustScore || 0;
       const scoreB = b.trustScore || 0;
       if (scoreB !== scoreA) return scoreB - scoreA;
       
-      // Then alphabetically by label (safely handle undefined labels)
-      const labelA = a.label || 'Unknown';
-      const labelB = b.label || 'Unknown';
-      return labelA.localeCompare(labelB);
+      // Then alphabetically by label
+      return a.label.localeCompare(b.label);
     });
   
   console.log("Rendering with graph data:", {
@@ -644,22 +554,9 @@ export const GraphVisualization = () => {
   
   // Create a node item component for reuse
   const NodeItem = ({ node, isInStack = false }: { node: GraphNode, isInStack?: boolean }) => {
-    // Skip rendering completely if node is undefined
-    if (!node) {
-      console.warn("Received undefined node in NodeItem");
-      return null;
-    }
-
-    // Generate a safe key
-    const nodeKey = `${isInStack ? 'stack' : 'node'}-${node.id || 'unknown'}`;
-    
     const isSelected = selectedNode && selectedNode.id === node.id;
-    const nodeId = node.id || '';
-    const npub = safeHexToNpub(nodeId);
+    const npub = hexToNpub(node.id);
     const trustScore = node.trustScore !== undefined ? node.trustScore : 0;
-    const displayScore = formatTrustScore(trustScore);
-    const nodeLabel = node.label || 'Unknown';
-    const nodeColor = node.color || '#3B82F6';
     
     // Calculate score color based on value
     // Green for high scores, yellow for medium, orange for low, red for very low
@@ -673,8 +570,8 @@ export const GraphVisualization = () => {
     
     return (
       <div 
-        key={nodeKey}
-        onClick={() => nodeId && handleNodeSelect(nodeId)}
+        key={node.id}
+        onClick={() => handleNodeSelect(node.id)}
         className={`p-3 mb-2 rounded cursor-pointer transition-colors ${
           isSelected ? 
           'bg-blue-100 dark:bg-blue-900 border-2 border-blue-400 dark:border-blue-600' : 
@@ -703,7 +600,7 @@ export const GraphVisualization = () => {
             {node.profile?.picture ? (
               <img 
                 src={node.profile.picture} 
-                alt={nodeLabel}
+                alt={node.label}
                 className="w-8 h-8 rounded-full object-cover z-10 relative"
                 onError={(e) => {
                   // Fallback on error
@@ -720,14 +617,14 @@ export const GraphVisualization = () => {
             {/* Fallback avatar */}
             <div 
               className={`w-8 h-8 rounded-full flex items-center justify-center text-white z-10 relative ${node.profile?.picture ? 'hidden' : ''}`}
-              style={{ backgroundColor: nodeColor }}
+              style={{ backgroundColor: node.color }}
             >
-              {nodeLabel.charAt(0).toUpperCase()}
+              {node.label.charAt(0).toUpperCase()}
             </div>
           </div>
           
           <div className="truncate">
-            <div className="font-semibold text-sm">{nodeLabel}</div>
+            <div className="font-semibold text-sm">{node.label}</div>
             <div className="text-xs text-gray-500 font-mono truncate">{npub.substring(0, 10)}...</div>
           </div>
           
@@ -738,7 +635,7 @@ export const GraphVisualization = () => {
                 className="text-white text-xs font-bold px-2 py-1 rounded-full"
                 style={{ backgroundColor: getScoreColor(trustScore) }}
               >
-                {displayScore}
+                {Math.round(trustScore * 10) / 10}
               </div>
             </div>
           )}
@@ -772,8 +669,8 @@ export const GraphVisualization = () => {
                   Navigation Path
                 </h3>
                 <div className="space-y-1">
-                  {navigationStack.map((node, index) => (
-                    <NodeItem key={`nav-stack-${node.id}-${index}`} node={node} isInStack={true} />
+                  {navigationStack.map((node) => (
+                    <NodeItem key={`stack-${node.id}`} node={node} isInStack={true} />
                   ))}
                 </div>
               </div>
@@ -784,7 +681,7 @@ export const GraphVisualization = () => {
               <>
                 <div className="mb-3">
                   <h3 className="text-sm font-medium text-gray-500 mb-2">Your Profile</h3>
-                  <NodeItem key={`current-user-${currentUserNode.id}`} node={currentUserNode} />
+                  <NodeItem node={currentUserNode} />
                 </div>
                 
                 <div className="mb-3">
@@ -819,8 +716,8 @@ export const GraphVisualization = () => {
               {sortedOtherNodes
                 // Filter out nodes that are already in the navigation stack
                 .filter(node => !navigationStack.some(stackNode => stackNode.id === node.id))
-                .map((node, index) => (
-                  <NodeItem key={`other-node-${node.id}-${index}`} node={node} />
+                .map(node => (
+                  <NodeItem key={node.id} node={node} />
                 ))
               }
             </div>
