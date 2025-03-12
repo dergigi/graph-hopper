@@ -212,13 +212,14 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
       return;
     }
     
-    // Track if already loading this node's followers
-    if (loading) {
+    // Track if already loading this node's followers - but don't skip during initialization
+    const isInitialLoad = currentUserPubkey === pubkey && graph.edges.length === 0;
+    if (loading && !isInitialLoad) {
       console.log(`Already loading data, skipping duplicate loadFollowersForNode request for ${pubkey}`);
       return;
     }
     
-    console.log(`Loading followers for node: ${pubkey}`);
+    console.log(`Loading followers for node: ${pubkey} (isInitialLoad: ${isInitialLoad})`);
     
     // Track if component is mounted
     const isMountedRef = { current: true };
@@ -234,26 +235,45 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
         limit: 1
       };
       
+      console.log("Subscribing to contact list with filter:", filter);
+      
       const sub = ndk.subscribe(filter);
       
       let contactListEvent: NDKEvent | null = null;
       
+      // Set up an event handler
       sub.on('event', (event: NDKEvent) => {
+        console.log("Received contact list event:", event.id);
         contactListEvent = event;
-        sub.stop(); // We only need one
+        // Keep subscription open until EOSE to ensure we get the latest version
       });
       
       // Wait for contact list with timeout
       await Promise.race([
         new Promise<void>(resolve => {
-          sub.on('eose', () => resolve());
+          sub.on('eose', () => {
+            console.log("Received EOSE for contact list");
+            if (contactListEvent) {
+              console.log(`Contact list has ${contactListEvent.tags?.length || 0} tags`);
+            } else {
+              console.log("No contact list event received before EOSE");
+            }
+            sub.stop(); // Now we can stop the subscription
+            resolve();
+          });
         }),
-        new Promise<void>(resolve => setTimeout(resolve, 5000))
+        new Promise<void>(resolve => {
+          setTimeout(() => {
+            console.log("Contact list subscription timed out");
+            sub.stop();
+            resolve();
+          }, 10000); // Increase timeout for initial load
+        })
       ]);
       
       // Check if we found a contact list
       if (!contactListEvent) {
-        console.log(`No contacts found for ${pubkey}`);
+        console.warn(`No contacts found for ${pubkey}`);
         if (isMountedRef.current) {
           setLoading(false);
         }
@@ -277,21 +297,23 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
       }
       
       // Limit the number of followed pubkeys to avoid overloading
-      const maxFollowersToLoad = 50;
+      const maxFollowersToLoad = isInitialLoad ? 100 : 50; // Load more during initial load
       const limitedFollowedPubkeys = followedPubkeys.slice(0, maxFollowersToLoad);
       
       if (followedPubkeys.length > maxFollowersToLoad) {
         console.log(`Limiting to ${maxFollowersToLoad} contacts to prevent performance issues (${followedPubkeys.length - maxFollowersToLoad} more available)`);
       }
       
-      // Update the graph with new nodes
-      // We'll create a new graph object to avoid reference issues
+      // Update the graph with new nodes and edges
       setGraph(prevGraph => {
-        // Create a copy of the current graph
+        // Create a deep copy to avoid reference issues
         const updatedGraph = { 
           nodes: [...prevGraph.nodes],
           edges: [...prevGraph.edges]
         };
+        
+        let addedNodesCount = 0;
+        let addedEdgesCount = 0;
         
         // Add edges for followed pubkeys
         limitedFollowedPubkeys.forEach((followedPubkey: string) => {
@@ -310,9 +332,10 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
             };
             
             updatedGraph.nodes.push(newNode);
+            addedNodesCount++;
           }
           
-          // Add the edge if it doesn't exist
+          // ALWAYS ADD THE EDGE - this is the key part for connections
           const edgeId = `${pubkey}-${followedPubkey}`;
           const existingEdge = updatedGraph.edges.find(e => e.id === edgeId);
           
@@ -324,10 +347,11 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
               size: 1,
               color: '#ccc'
             });
+            addedEdgesCount++;
           }
         });
         
-        console.log(`Updated graph: ${updatedGraph.nodes.length} nodes, ${updatedGraph.edges.length} edges`);
+        console.log(`Updated graph: added ${addedNodesCount} nodes and ${addedEdgesCount} edges. Total: ${updatedGraph.nodes.length} nodes, ${updatedGraph.edges.length} edges`);
         return updatedGraph;
       });
       
@@ -337,6 +361,8 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
         kinds: [0], // Metadata (profiles)
         authors: limitedFollowedPubkeys,
       };
+      
+      console.log("Subscribing to profiles with filter:", { kinds: profileFilter.kinds, authorsCount: limitedFollowedPubkeys.length });
       
       // Create a new subscription
       const profileSub = ndk.subscribe(profileFilter);
@@ -439,7 +465,7 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
         if (isMountedRef.current) {
           setLoading(false);
         }
-      }, 8000);
+      }, isInitialLoad ? 15000 : 8000); // Longer timeout for initial load
       
       // Wait for EOSE and then close the subscription
       profileSub.on('eose', () => {
@@ -467,7 +493,7 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
     return () => {
       isMountedRef.current = false;
     };
-  }, [ndk, loading]);
+  }, [ndk, loading, currentUserPubkey, graph.edges]);
   
   // Load web of trust scores from Vertex DVM
   const loadWebOfTrustScores = useCallback(async (rootPubkey: string) => {
@@ -605,9 +631,9 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
         // Update graph immediately to show something
         if (isMountedRef.current) {
           setGraph(initialGraph);
-          setSelectedNode(currentUserNode); // Select current user initially
-          setCurrentUserPubkey(user.pubkey); // Set current user pubkey
+          setCurrentUserPubkey(user.pubkey); // Set current user pubkey before setSelectedNode
           setNavigationStack([currentUserNode]); // Initialize navigation stack with current user
+          setSelectedNode(currentUserNode); // Select current user initially (will trigger loadFollowersForNode)
         }
         
         // Step 2: Connect to user's relays
@@ -621,13 +647,15 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
         // Step 3: Load user's followers (only if relays connected)
         if (relaysConnected && isMountedRef.current) {
           console.log("Step 3: Loading followers for current user");
+          
+          // Explicitly load followers for the current user to ensure connections are set up
           await loadFollowersForNode(user.pubkey);
-        }
-        
-        // Step 4: Calculate web-of-trust for the logged-in user (only if relays connected)
-        if (relaysConnected && isMountedRef.current) {
-          console.log("Step 4: Loading web-of-trust data");
-          await loadWebOfTrustScores(user.pubkey);
+          
+          // Step 4: Calculate web-of-trust for the logged-in user (only if relays connected)
+          if (isMountedRef.current) {
+            console.log("Step 4: Loading web-of-trust data");
+            await loadWebOfTrustScores(user.pubkey);
+          }
         }
         
         // Clear loading state
