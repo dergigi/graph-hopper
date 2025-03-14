@@ -246,10 +246,21 @@ export const GraphVisualization = () => {
         .force("link", d3.forceLink<SimNode, SimLink>(
           linkObjects as SimLink[]
         ).id(d => d.id).distance(100))
-        .force("charge", d3.forceManyBody().strength(-700))
+        // Reduce strength for better performance
+        .force("charge", d3.forceManyBody().strength(-500).distanceMax(300))
         .force("center", d3.forceCenter(width / 2, height / 2))
-        .force("x", d3.forceX(width / 2).strength(0.1))
-        .force("y", d3.forceY(height / 2).strength(0.1));
+        // Reduce strength of positioning forces
+        .force("x", d3.forceX(width / 2).strength(0.05))
+        .force("y", d3.forceY(height / 2).strength(0.05))
+        // Add decay for faster settling
+        .alphaDecay(0.03)
+        .velocityDecay(0.3);
+
+      // Limit max nodes for performance if the graph is too large
+      if (nodeObjects.length > 100) {
+        console.log("Large graph detected, optimizing for performance");
+        simulation.alphaDecay(0.04).velocityDecay(0.4);
+      }
       
       console.log("D3 simulation created");
       
@@ -387,44 +398,96 @@ export const GraphVisualization = () => {
       // Define drag handlers
       function dragstarted(event: d3.D3DragEvent<SVGGElement, SimNode, SimNode>, d: SimNode) {
         if (!event.active) simulation.alphaTarget(0.3).restart();
+        // Pin the node in place during drag
         d.fx = d.x;
         d.fy = d.y;
+        // Pause normal ticking during drag for better performance
+        simulation.stop();
       }
       
       function dragged(event: d3.D3DragEvent<SVGGElement, SimNode, SimNode>, d: SimNode) {
+        // Update the fixed position
         d.fx = event.x;
         d.fy = event.y;
+        
+        // Manual position update for just this node and its connections
+        // instead of recomputing the whole layout
+        d3.select(event.sourceEvent.target.closest('.node'))
+          .attr("transform", `translate(${event.x}, ${event.y})`);
+          
+        // Update connected links manually
+        link.each(function(l: SimLink) {
+          if ((l.source as SimNode).id === d.id || (l.target as SimNode).id === d.id) {
+            const line = d3.select(this);
+            if ((l.source as SimNode).id === d.id) {
+              line.attr("x1", event.x).attr("y1", event.y);
+            }
+            if ((l.target as SimNode).id === d.id) {
+              line.attr("x2", event.x).attr("y2", event.y);
+            }
+          }
+        });
       }
       
       function dragended(event: d3.D3DragEvent<SVGGElement, SimNode, SimNode>, d: SimNode) {
         if (!event.active) simulation.alphaTarget(0);
-        d.fx = null;
-        d.fy = null;
+        // Resume simulation with the node in its new position
+        simulation.restart();
+        
+        // If the user just clicked (moved very little), unpin the node
+        if (d.x !== undefined && d.y !== undefined &&
+            Math.abs(event.x - d.x) < 3 && Math.abs(event.y - d.y) < 3) {
+          d.fx = null;
+          d.fy = null;
+        }
       }
       
-      // Update positions on each tick
+      // Update positions on each tick using requestAnimationFrame for better performance
+      let rafId: number | null = null;
+      let tickCounter = 0;
+      
       simulation.on("tick", () => {
-        link
-          .attr("x1", d => {
-            const source = d.source as SimNode;
-            return source.x || 0;
-          })
-          .attr("y1", d => {
-            const source = d.source as SimNode;
-            return source.y || 0;
-          })
-          .attr("x2", d => {
-            const target = d.target as SimNode;
-            return target.x || 0;
-          })
-          .attr("y2", d => {
-            const target = d.target as SimNode;
-            return target.y || 0;
-          });
+        // Only update every other tick for better performance
+        tickCounter++;
+        if (tickCounter % 2 !== 0) return;
         
-        node
-          .attr("transform", d => `translate(${d.x || 0}, ${d.y || 0})`);
+        // Cancel any previous animation frame
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+        }
+        
+        // Schedule update on next animation frame
+        rafId = requestAnimationFrame(() => {
+          link
+            .attr("x1", d => {
+              const source = d.source as SimNode;
+              return source.x || 0;
+            })
+            .attr("y1", d => {
+              const source = d.source as SimNode;
+              return source.y || 0;
+            })
+            .attr("x2", d => {
+              const target = d.target as SimNode;
+              return target.x || 0;
+            })
+            .attr("y2", d => {
+              const target = d.target as SimNode;
+              return target.y || 0;
+            });
+          
+          node
+            .attr("transform", d => `translate(${d.x || 0}, ${d.y || 0})`);
+        });
       });
+      
+      // Stop simulation after a reasonable time to save CPU
+      setTimeout(() => {
+        if (simulation && simulation.alpha() > simulation.alphaMin()) {
+          console.log("Cooling down simulation to save CPU");
+          simulation.alphaTarget(0).alpha(0.1);
+        }
+      }, 3000);
       
       // Center on current user when graph is first created
       if (currentUserPubkey && isInitialRender) {
@@ -480,6 +543,9 @@ export const GraphVisualization = () => {
       // Cleanup function
       return () => {
         console.log("Cleaning up D3 simulation");
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+        }
         simulation.stop();
       };
     } catch (error) {
