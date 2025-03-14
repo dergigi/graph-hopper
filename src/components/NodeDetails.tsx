@@ -5,6 +5,7 @@ import { NDKEvent } from '@nostr-dev-kit/ndk';
 import { NodeDetailsProps } from '../types';
 import { truncatePubkey } from '../lib/graph';
 import { NoteCard } from './NoteCard';
+import Image from 'next/image';
 
 export const NodeDetails: React.FC<NodeDetailsProps> = ({
   node,
@@ -36,10 +37,24 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
       <div className="p-4 border-b border-slate-200 dark:border-slate-700">
         <div className="flex items-center space-x-4">
           {profile.picture ? (
-            <img 
+            <Image 
               src={profile.picture} 
               alt={displayName} 
               className="w-16 h-16 rounded-full object-cover" 
+              width={64}
+              height={64}
+              unoptimized
+              onError={(e) => {
+                // Hide broken image and show fallback
+                const img = e.target as HTMLImageElement;
+                img.style.display = 'none';
+                // Try to find and show the fallback div
+                const parent = img.parentElement;
+                const fallback = parent?.querySelector('div');
+                if (fallback) {
+                  fallback.classList.remove('hidden');
+                }
+              }}
             />
           ) : (
             <div 

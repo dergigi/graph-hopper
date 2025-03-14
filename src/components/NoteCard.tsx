@@ -4,6 +4,7 @@ import React, { ReactElement } from 'react';
 import { NDKEvent } from '@nostr-dev-kit/ndk';
 import { nip19 } from 'nostr-tools';
 import { truncatePubkey } from '../lib/graph';
+import Image from 'next/image';
 
 interface NoteCardProps {
   note: NDKEvent;
@@ -16,7 +17,7 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note }) => {
 
   // Helper function to detect and process different types of content
   const formatContent = () => {
-    let content = note.content;
+    const content = note.content;
     const processedElements: ReactElement[] = [];
     
     // Process image URLs
@@ -29,7 +30,7 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note }) => {
     
     // Process YouTube URLs
     const youtubeRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11}))/g;
-    let youtubeMatches: RegExpExecArray[] = [];
+    const youtubeMatches: RegExpExecArray[] = [];
     let match: RegExpExecArray | null;
     
     while ((match = youtubeRegex.exec(content)) !== null) {
@@ -47,12 +48,12 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note }) => {
     const nevents = content.match(neventRegex) || [];
     
     const npubRegex = /(npub[a-zA-Z0-9]{1,60})/g;
-    const npubs = content.match(npubRegex) || [];
+    const npubs: string[] = content.match(npubRegex) || [];
     
     // Process regular URLs (that aren't images/videos/youtube/nostr)
     const allSpecialUrls = [...images, ...videos, ...youtubeUrls, ...nprofiles, ...nevents, ...npubs];
     const urlRegex = /(https?:\/\/\S+)/g;
-    let plainUrls: string[] = [];
+    const plainUrls: string[] = [];
     let urlMatch;
     
     while ((urlMatch = urlRegex.exec(content)) !== null) {
@@ -73,12 +74,12 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note }) => {
     // Replace Nostr references with links
     npubs.forEach(npub => {
       try {
-        const { type, data } = nip19.decode(npub);
+        const { type } = nip19.decode(npub);
         if (type === 'npub') {
-          const shortId = truncatePubkey(data as string);
+          // Store a reference to the decoded data but don't use shortId directly
           remainingText = remainingText.split(npub).join(`[[NPUB_${npubs.indexOf(npub)}]]`);
         }
-      } catch (e) {
+      } catch {
         // If decode fails, leave as is
       }
     });
@@ -105,7 +106,7 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note }) => {
               `<a href="nostr:${npub}" class="text-purple-500 hover:underline font-medium">@${shortId}</a>`
             );
           }
-        } catch (e) {
+        } catch {
           // If decode fails, leave as is
         }
       });
@@ -123,17 +124,18 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note }) => {
     // Add images
     images.forEach((url, index) => {
       processedElements.push(
-        <img 
+        <Image 
           key={`img-${index}`}
           src={url} 
           alt="Embedded media" 
           className="w-full h-auto rounded-lg my-2 border border-gray-200 dark:border-gray-700 shadow-sm" 
-          loading="lazy"
+          width={500}
+          height={300}
+          unoptimized
           onError={(e) => {
             // Replace broken images with a placeholder
             const img = e.target as HTMLImageElement;
-            img.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'%3E%3Crect width='100%25' height='100%25' fill='%23f0f0f0'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='14px' fill='%23999999'%3EImage unavailable%3C/text%3E%3C/svg%3E";
-            img.className = img.className + " opacity-50";
+            img.style.display = 'none';
           }}
         />
       );

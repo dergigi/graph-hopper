@@ -7,6 +7,7 @@ import { Footer } from './Footer';
 import * as d3 from 'd3';
 import { GraphNode, GraphEdge } from '../types/index';
 import { hexToNpub } from '../utils/vertex'; // Import the utility function
+import Image from 'next/image';
 
 // Extended type for simulation nodes
 type SimNode = GraphNode & d3.SimulationNodeDatum & {
@@ -62,32 +63,6 @@ export const GraphVisualization = () => {
     }
   }, [graphData, currentUserPubkey, isInitialRender]);
   
-  // Handle node selection
-  const handleNodeSelect = useCallback(async (nodeId: string, nodeX?: number, nodeY?: number) => {
-    // Don't reload if it's the same node
-    if (selectedNode && selectedNode.id === nodeId) {
-      return;
-    }
-    
-    console.log("Selecting node:", nodeId, {x: nodeX, y: nodeY});
-    
-    // Find the node in the graph
-    const clickedNode = graphData.nodes.find(node => node.id === nodeId);
-    if (!clickedNode) {
-      console.warn("Node not found in graph:", nodeId);
-      return;
-    }
-    
-    // Set the selected node and load notes (handled in the context now)
-    setSelectedNode(clickedNode);
-    
-    // Load the followers for this node
-    await loadFollowersForNode(nodeId);
-    
-    // Always center the view on the clicked node
-    centerNodeInViewport(nodeId, nodeX, nodeY);
-  }, [selectedNode, setSelectedNode, loadFollowersForNode, graphData.nodes]);
-  
   // Center a node in the viewport
   const centerNodeInViewport = useCallback((nodeId: string, nodeX?: number, nodeY?: number) => {
     if (
@@ -138,6 +113,32 @@ export const GraphVisualization = () => {
       });
     }
   }, []);
+  
+  // Handle node selection
+  const handleNodeSelect = useCallback(async (nodeId: string, nodeX?: number, nodeY?: number) => {
+    // Don't reload if it's the same node
+    if (selectedNode && selectedNode.id === nodeId) {
+      return;
+    }
+    
+    console.log("Selecting node:", nodeId, {x: nodeX, y: nodeY});
+    
+    // Find the node in the graph
+    const clickedNode = graphData.nodes.find(node => node.id === nodeId);
+    if (!clickedNode) {
+      console.warn("Node not found in graph:", nodeId);
+      return;
+    }
+    
+    // Set the selected node and load notes (handled in the context now)
+    setSelectedNode(clickedNode);
+    
+    // Load the followers for this node
+    await loadFollowersForNode(nodeId);
+    
+    // Always center the view on the clicked node
+    centerNodeInViewport(nodeId, nodeX, nodeY);
+  }, [selectedNode, setSelectedNode, loadFollowersForNode, graphData.nodes, centerNodeInViewport]);
   
   const closeNodeDetails = () => {
     setSelectedNode(null);
@@ -551,7 +552,7 @@ export const GraphVisualization = () => {
     } catch (error) {
       console.error("Error in D3 graph visualization:", error);
     }
-  }, [graphData, navigationStack, handleNodeSelect]);
+  }, [graphData, navigationStack, handleNodeSelect, currentUserPubkey, isInitialRender, selectedNode]);
   
   if (graphData.nodes.length === 0) {
     console.log("No graph data available, showing placeholder");
@@ -610,10 +611,13 @@ export const GraphVisualization = () => {
           <div className="relative mr-3 flex-shrink-0">
             {/* Profile picture */}
             {node.profile?.picture ? (
-              <img 
+              <Image 
                 src={node.profile.picture} 
                 alt={node.label}
                 className="w-8 h-8 rounded-full object-cover z-10 relative"
+                width={32}
+                height={32}
+                unoptimized
                 onError={(e) => {
                   // Fallback on error
                   const imgElement = e.target as HTMLImageElement;
