@@ -67,7 +67,7 @@ export const createVerifyReputationEvent = async (
   // Create event in NIP-90 format
   const event = new NDKEvent(vertexNDK);
   // Manually set kind for Vertex
-  event.kind = VERTEX_KIND_REQUEST as any; // Using any to avoid TypeScript errors
+  event.kind = VERTEX_KIND_REQUEST as number; // Specify as number instead of any
   event.tags = [
     ['p', hexPubkey],
     ['method', 'verify_reputation'],
@@ -123,7 +123,7 @@ export const getWebOfTrust = async (
     
     // Wait for the response with a timeout
     const filter: NDKFilter = {
-      kinds: [VERTEX_KIND_RESPONSE as any], // Using any to avoid TypeScript errors
+      kinds: [VERTEX_KIND_RESPONSE as number], // Specify as number instead of any
       '#e': [requestEvent.id],
       limit: 1,
     };

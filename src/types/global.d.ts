@@ -9,7 +9,7 @@ declare module 'react-sigma' {
   
   export interface SigmaSettings {
     nodeProgramClasses?: {
-      image?: any;
+      image?: unknown;
     };
     defaultNodeType?: string;
     defaultEdgeType?: string;
@@ -18,14 +18,14 @@ declare module 'react-sigma' {
     labelRenderedSizeThreshold?: number;
     labelFont?: string;
     zIndex?: boolean;
-    [key: string]: any;
+    [key: string]: unknown;
   }
   
   export interface SigmaContainerProps {
     style?: React.CSSProperties;
     graph: {
-      nodes: any[];
-      edges: any[];
+      nodes: unknown[];
+      edges: unknown[];
     };
     settings?: SigmaSettings;
     children?: ReactNode;
@@ -39,7 +39,7 @@ declare module 'react-sigma' {
 
 declare module 'sigma' {
   export class Sigma {
-    on(event: string, callback: (event: any) => void): void;
+    on(event: string, callback: (event: unknown) => void): void;
   }
 }
 
@@ -54,15 +54,13 @@ declare module 'sigma/rendering' {
 }
 
 declare module 'graphology-layout-forceatlas2' {
-  import { AbstractGraph } from 'graphology-types';
-  
   export interface ForceAtlasSettings {
     gravity?: number;
     scalingRatio?: number;
     slowDown?: number;
     barnesHutOptimize?: boolean;
     barnesHutTheta?: number;
-    [key: string]: any;
+    [key: string]: unknown;
   }
   
   export interface ForceAtlasOptions {
@@ -72,20 +70,12 @@ declare module 'graphology-layout-forceatlas2' {
   }
   
   export default class ForceAtlas2 {
-    static assign(options: ForceAtlasOptions, context: any): { stop: () => void };
+    static assign(options: ForceAtlasOptions, context: unknown): { stop: () => void };
   }
 }
 
 declare module 'graphology-types' {
   export interface Attributes {
-    [key: string]: any;
-  }
-  
-  export interface AbstractGraph<
-    NodeAttributes extends Attributes = Attributes,
-    EdgeAttributes extends Attributes = Attributes,
-    GraphAttributes extends Attributes = Attributes
-  > {
-    [key: string]: any;
+    [key: string]: unknown;
   }
 } 

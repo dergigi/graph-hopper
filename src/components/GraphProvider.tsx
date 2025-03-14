@@ -290,7 +290,7 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
       setNotesError(null);
       // Don't modify the navigation stack when deselecting
     }
-  }, [loadNotesForNode, navigationStack, loadFollowersForNode]);
+  }, [loadNotesForNode, navigationStack, loadFollowersForNode, selectedNode?.id]);
   
   // Ensure the NDK is connected to good relays
   const connectToRelays = useCallback(async () => {
