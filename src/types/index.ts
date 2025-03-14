@@ -86,8 +86,6 @@ export interface GraphContextType {
   userNotes: NDKEvent[];
   isLoadingNotes: boolean;
   notesError: string | null;
-  isLoadingTrustScores: boolean;
-  getTrustScore: (pubkey: string) => number | undefined;
   navigationStack: GraphNode[];
 }
 

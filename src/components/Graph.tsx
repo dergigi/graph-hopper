@@ -25,7 +25,6 @@ export const GraphVisualization = () => {
     userNotes,
     isLoadingNotes,
     notesError,
-    isLoadingTrustScores,
     navigationStack
   } = useGraph();
   
@@ -156,15 +155,6 @@ export const GraphVisualization = () => {
       });
       return;
     }
-    
-    // Calculate trust score color based on value
-    const getScoreColor = (score: number): string => {
-      if (score >= 0.8) return '#10B981'; // Green
-      if (score >= 0.6) return '#22C55E'; // Light green
-      if (score >= 0.4) return '#FBBF24'; // Yellow
-      if (score >= 0.2) return '#F97316'; // Orange
-      return '#EF4444'; // Red
-    };
     
     // Store the current node positions from existing graph
     const nodePositions = new Map<string, {x: number, y: number}>();
@@ -349,47 +339,9 @@ export const GraphVisualization = () => {
         .attr("pointer-events", "none")
         .text(d => d.label.charAt(0).toUpperCase());
       
-      // Add trust score badges to nodes
-      node.append("g")
-        .attr("class", "trust-score-badge")
-        .attr("transform", "translate(15, -15)")
-        .each(function(d) {
-          const trustScore = d.trustScore !== undefined ? d.trustScore : 0;
-          if (trustScore > 0) {
-            const badge = d3.select(this);
-            badge.append("circle")
-              .attr("r", 10)
-              .attr("fill", getScoreColor(trustScore));
-            
-            badge.append("text")
-              .attr("text-anchor", "middle")
-              .attr("dy", ".35em")
-              .attr("fill", "white")
-              .attr("font-size", "10px")
-              .attr("font-weight", "bold")
-              .text(Math.round(trustScore * 10) / 10);
-          }
-        });
-      
-      // Add a trust score ring around nodes with scores
-      node.each(function(d) {
-        const trustScore = d.trustScore !== undefined ? d.trustScore : 0;
-        if (trustScore > 0) {
-          d3.select(this).append("circle")
-            .attr("r", 18)
-            .attr("fill", "none")
-            .attr("stroke", getScoreColor(trustScore))
-            .attr("stroke-width", 2)
-            .attr("opacity", 0.8);
-        }
-      });
-      
       // Add title with full npub for hover tooltip
       node.append("title")
-        .text(d => {
-          const score = d.trustScore !== undefined ? ` (Trust Score: ${Math.round(d.trustScore * 10) / 10})` : '';
-          return `${d.label}\n${d.npub}${score}`;
-        });
+        .text(d => `${d.label}\n${d.npub}`);
       
       // Add selection ring to highlight the selected node
       if (selectedNode) {
@@ -555,16 +507,11 @@ export const GraphVisualization = () => {
   // Separate the current user node and other nodes
   const currentUserNode = graphData.nodes.find(node => node.id === currentUserPubkey);
   
-  // Sort other nodes by trust score (highest first)
+  // Sort other nodes alphabetically
   const sortedOtherNodes = graphData.nodes
     .filter(node => node.id !== currentUserPubkey)
     .sort((a, b) => {
-      // First by trust score (high to low)
-      const scoreA = a.trustScore || 0;
-      const scoreB = b.trustScore || 0;
-      if (scoreB !== scoreA) return scoreB - scoreA;
-      
-      // Then alphabetically by label
+      // Sort alphabetically by label
       return a.label.localeCompare(b.label);
     });
   
@@ -578,17 +525,6 @@ export const GraphVisualization = () => {
   const NodeItem = ({ node, isInStack = false }: { node: GraphNode, isInStack?: boolean }) => {
     const isSelected = selectedNode && selectedNode.id === node.id;
     const npub = hexToNpub(node.id);
-    const trustScore = node.trustScore !== undefined ? node.trustScore : 0;
-    
-    // Calculate score color based on value
-    // Green for high scores, yellow for medium, orange for low, red for very low
-    const getScoreColor = (score: number): string => {
-      if (score >= 0.8) return '#10B981'; // Green
-      if (score >= 0.6) return '#22C55E'; // Light green
-      if (score >= 0.4) return '#FBBF24'; // Yellow
-      if (score >= 0.2) return '#F97316'; // Orange
-      return '#EF4444'; // Red
-    };
     
     return (
       <div 
@@ -604,20 +540,8 @@ export const GraphVisualization = () => {
         title={npub}
       >
         <div className="flex items-center">
-          {/* Avatar with trust score ring */}
+          {/* Avatar */}
           <div className="relative mr-3 flex-shrink-0">
-            {/* Trust score ring */}
-            {trustScore > 0 && (
-              <div 
-                className="absolute inset-0 rounded-full"
-                style={{
-                  border: `2px solid ${getScoreColor(trustScore)}`,
-                  transform: 'scale(1.1)',
-                  zIndex: 1
-                }}
-              ></div>
-            )}
-            
             {/* Profile picture */}
             {node.profile?.picture ? (
               <img 
@@ -649,18 +573,6 @@ export const GraphVisualization = () => {
             <div className="font-semibold text-sm">{node.label}</div>
             <div className="text-xs text-gray-500 font-mono truncate">{npub.substring(0, 10)}...</div>
           </div>
-          
-          {/* Trust score badge */}
-          {trustScore > 0 && (
-            <div className="ml-auto flex-shrink-0 flex items-center">
-              <div 
-                className="text-white text-xs font-bold px-2 py-1 rounded-full"
-                style={{ backgroundColor: getScoreColor(trustScore) }}
-              >
-                {Math.round(trustScore * 10) / 10}
-              </div>
-            </div>
-          )}
           
           {/* Selected indicator */}
           {isSelected && (
@@ -709,11 +621,6 @@ export const GraphVisualization = () => {
                 <div className="mb-3">
                   <h3 className="text-sm font-medium text-gray-500 mb-2">
                     Following ({sortedOtherNodes.length})
-                    {isLoadingTrustScores && (
-                      <span className="ml-2 text-xs text-blue-500">
-                        Loading trust scores...
-                      </span>
-                    )}
                   </h3>
                 </div>
               </>
@@ -724,11 +631,6 @@ export const GraphVisualization = () => {
               <div className="mb-3">
                 <h3 className="text-sm font-medium text-gray-500 mb-2">
                   Other Nodes ({sortedOtherNodes.length})
-                  {isLoadingTrustScores && (
-                    <span className="ml-2 text-xs text-blue-500">
-                      Loading trust scores...
-                    </span>
-                  )}
                 </h3>
               </div>
             )}
