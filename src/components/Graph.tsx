@@ -659,7 +659,7 @@ export const GraphVisualization = () => {
               {graphData.nodes.length} nodes / {graphData.edges.length} connections
             </p>
             <p className="text-xs text-gray-500 mt-1">
-              Showing follow connections with trust scores from Vertex DVM
+              Showing follow connections in your Nostr social graph
             </p>
           </div>
           
