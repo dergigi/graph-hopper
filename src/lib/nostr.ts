@@ -143,6 +143,163 @@ export const getUserNotes = async (pubkey: string, limit: number = 20, ndkInstan
 };
 
 /**
+ * Create a live subscription for user notes
+ * @returns An object with the subscription and notes array that will update in real-time
+ */
+export const createNotesSubscription = (
+  pubkey: string, 
+  limit: number = 20, 
+  onEvent?: (event: NDKEvent) => void,
+  ndkInstance?: NDK
+) => {
+  // Use the provided NDK instance or fall back to the global one
+  const ndkToUse = ndkInstance || ndk;
+  
+  if (!ndkToUse) {
+    throw new Error('NDK not initialized');
+  }
+  
+  // Create a container to store notes
+  const notes: NDKEvent[] = [];
+  
+  // Create filter for text notes from this user
+  const filter: NDKFilter = {
+    kinds: [1], // kind 1 is "text note"
+    authors: [pubkey],
+    limit
+  };
+  
+  // Create a subscription
+  const subscription = ndkToUse.subscribe(filter);
+  
+  // Add an event handler to process incoming events
+  subscription.on('event', (event: NDKEvent) => {
+    // Check if we already have this event
+    const existingIndex = notes.findIndex(e => e.id === event.id);
+    
+    if (existingIndex >= 0) {
+      // Replace existing event with the new one (might have updates)
+      notes[existingIndex] = event;
+    } else {
+      // Add the new event
+      notes.push(event);
+      
+      // Keep the array sorted by created_at (newest first)
+      notes.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      
+      // Trim to keep only the most recent 'limit' events
+      if (notes.length > limit) {
+        notes.splice(limit, notes.length - limit);
+      }
+    }
+    
+    // Call the optional callback if provided
+    if (onEvent) {
+      onEvent(event);
+    }
+  });
+  
+  // Return both the subscription (which can be closed later) and the notes array
+  return { subscription, notes };
+};
+
+/**
+ * Create a live subscription for following list changes
+ */
+export const createFollowingSubscription = (
+  pubkey: string,
+  onUpdate?: (following: string[]) => void,
+  ndkInstance?: NDK
+) => {
+  // Use the provided NDK instance or fall back to the global one
+  const ndkToUse = ndkInstance || ndk;
+  
+  if (!ndkToUse) {
+    throw new Error('NDK not initialized');
+  }
+  
+  // Initial state
+  let currentFollowing: string[] = [];
+  
+  // Create filter for contact list events
+  const filter: NDKFilter = {
+    kinds: [3], // kind 3 is "contacts"
+    authors: [pubkey],
+  };
+  
+  // Create a subscription
+  const subscription = ndkToUse.subscribe(filter);
+  
+  // Process events and update following list when new contact lists are published
+  subscription.on('event', (event: NDKEvent) => {
+    // Check if this is a newer event than what we've seen
+    const isNewerEvent = event.created_at && (!subscription.lastEventTimestamp || 
+      event.created_at > subscription.lastEventTimestamp);
+    
+    if (isNewerEvent) {
+      // Extract the pubkeys from the tags
+      const following: string[] = [];
+      for (const tag of event.tags) {
+        if (tag[0] === 'p') {
+          following.push(tag[1]);
+        }
+      }
+      
+      // Update the current following list
+      currentFollowing = following;
+      
+      // Update last event timestamp
+      subscription.lastEventTimestamp = event.created_at;
+      
+      // Call the optional callback if provided
+      if (onUpdate) {
+        onUpdate(following);
+      }
+    }
+  });
+  
+  // Trigger an initial fetch to populate the following list
+  ndkToUse.fetchEvents(filter).then(events => {
+    let latestEvent: NDKEvent | null = null;
+    
+    // Find the most recent contact list event
+    for (const event of events) {
+      if (!latestEvent || (event.created_at && latestEvent.created_at && 
+          event.created_at > latestEvent.created_at)) {
+        latestEvent = event;
+      }
+    }
+    
+    if (latestEvent) {
+      // Extract the pubkeys from the tags
+      const following: string[] = [];
+      for (const tag of latestEvent.tags) {
+        if (tag[0] === 'p') {
+          following.push(tag[1]);
+        }
+      }
+      
+      // Update the current following list
+      currentFollowing = following;
+      
+      // Update last event timestamp
+      subscription.lastEventTimestamp = latestEvent.created_at;
+      
+      // Call the optional callback if provided
+      if (onUpdate) {
+        onUpdate(following);
+      }
+    }
+  });
+  
+  // Return both the subscription and a function to get the current following list
+  return { 
+    subscription, 
+    getFollowing: () => currentFollowing 
+  };
+};
+
+/**
  * Get a user's profile data
  */
 export const getUserProfile = async (pubkey: string, ndkInstance?: NDK): Promise<NostrProfile> => {

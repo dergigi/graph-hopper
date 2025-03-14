@@ -166,6 +166,23 @@ export const GraphVisualization = () => {
       return '#EF4444'; // Red
     };
     
+    // Store the current node positions from existing graph
+    const nodePositions = new Map<string, {x: number, y: number}>();
+    d3.select(svgRef.current).selectAll('g.node').each(function() {
+      const node = d3.select(this);
+      const nodeId = node.attr('data-id');
+      const transform = node.attr('transform');
+      if (nodeId && transform) {
+        const match = transform.match(/translate\(([^,]+),([^)]+)\)/);
+        if (match) {
+          nodePositions.set(nodeId, {
+            x: parseFloat(match[1]),
+            y: parseFloat(match[2])
+          });
+        }
+      }
+    });
+    
     // Clear any existing graph
     d3.select(svgRef.current).selectAll("*").remove();
     
@@ -179,20 +196,25 @@ export const GraphVisualization = () => {
       console.warn("Container has zero width or height, D3 visualization may not work");
     }
     
-    // Convert hex pubkeys to npubs for display
-    const nodeObjects = graphData.nodes.map(node => ({
-      ...node,
-      // Store the npub version of the ID for display
-      npub: hexToNpub(node.id),
-      // Initialize D3 simulation properties with explicit positioning
-      x: node.x !== undefined ? node.x : width / 2 + (Math.random() - 0.5) * 200,
-      y: node.y !== undefined ? node.y : height / 2 + (Math.random() - 0.5) * 200,
-      vx: 0,
-      vy: 0,
-      index: undefined,
-      fx: undefined,
-      fy: undefined
-    }));
+    // Convert hex pubkeys to npubs for display and preserve positions when possible
+    const nodeObjects = graphData.nodes.map(node => {
+      // Check if we have a stored position for this node
+      const storedPosition = nodePositions.get(node.id);
+      
+      return {
+        ...node,
+        // Store the npub version of the ID for display
+        npub: hexToNpub(node.id),
+        // Use stored position if available, otherwise initialize with default
+        x: storedPosition?.x ?? node.x ?? width / 2 + (Math.random() - 0.5) * 200,
+        y: storedPosition?.y ?? node.y ?? height / 2 + (Math.random() - 0.5) * 200,
+        vx: 0,
+        vy: 0,
+        index: undefined,
+        fx: undefined,
+        fy: undefined
+      };
+    });
     
     console.log("Processed node objects:", nodeObjects.length);
     
@@ -511,7 +533,7 @@ export const GraphVisualization = () => {
     } catch (error) {
       console.error("Error in D3 graph visualization:", error);
     }
-  }, [graphData, selectedNode, handleNodeSelect, currentUserPubkey, isInitialRender]);
+  }, [graphData, navigationStack, handleNodeSelect]);
   
   if (graphData.nodes.length === 0) {
     console.log("No graph data available, showing placeholder");

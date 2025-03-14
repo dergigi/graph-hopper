@@ -1,11 +1,11 @@
 'use client';
 
-import React, { createContext, useState, useContext, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useState, useContext, useEffect, useCallback, useMemo, useRef } from 'react';
 import { GraphData, GraphNode, GraphContextType, NostrProfile } from '../types';
 import { initializeGraph, createNodeFromUser } from '../lib/graph';
-import { getUserNotes } from '../lib/nostr';
+import { getUserNotes, createNotesSubscription, createFollowingSubscription } from '../lib/nostr';
 import { useAuth } from './AuthProvider';
-import { NDKEvent, NDKUser } from '@nostr-dev-kit/ndk';
+import { NDKEvent, NDKUser, NDKSubscription } from '@nostr-dev-kit/ndk';
 import { getWebOfTrust, connectToVertex } from '../utils/vertex';
 
 // Create the graph context
@@ -42,24 +42,59 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
   // Add navigation stack state
   const [navigationStack, setNavigationStack] = useState<GraphNode[]>([]);
   
+  // Store active subscriptions to be able to close them when needed
+  const activeSubscriptionsRef = useRef<Map<string, NDKSubscription>>(new Map());
+  
+  // Cleanup function for subscriptions
+  const cleanupSubscriptions = useCallback(() => {
+    activeSubscriptionsRef.current.forEach(subscription => {
+      subscription.stop();
+    });
+    activeSubscriptionsRef.current.clear();
+  }, []);
+  
   // Get trust score for a specific pubkey
   const getTrustScore = useCallback((pubkey: string): number | undefined => {
     return trustScores.get(pubkey);
   }, [trustScores]);
   
-  // Load notes for a node
+  // Load notes for a node using WebSocket subscription
   const loadNotesForNode = useCallback(async (nodeId: string) => {
     if (!ndk) {
       setNotesError('NDK not initialized');
       return;
     }
     
+    // Close any existing notes subscription
+    const existingNotesSubscription = activeSubscriptionsRef.current.get(`notes:${nodeId}`);
+    if (existingNotesSubscription) {
+      existingNotesSubscription.stop();
+      activeSubscriptionsRef.current.delete(`notes:${nodeId}`);
+    }
+    
     setIsLoadingNotes(true);
     setNotesError(null);
     
     try {
-      const notes = await getUserNotes(nodeId, 20, ndk);
-      setUserNotes(notes);
+      // Initial load to populate notes quickly
+      const initialNotes = await getUserNotes(nodeId, 20, ndk);
+      setUserNotes(initialNotes);
+      
+      // Then set up a subscription for real-time updates
+      const { subscription, notes } = createNotesSubscription(
+        nodeId, 
+        20, 
+        // This callback is called whenever a new note is received
+        (event) => {
+          // Update the notes state with the latest notes array
+          setUserNotes([...notes]);
+        },
+        ndk
+      );
+      
+      // Store the subscription for cleanup
+      activeSubscriptionsRef.current.set(`notes:${nodeId}`, subscription);
+      
     } catch (err) {
       console.error(`Error loading notes for ${nodeId}:`, err);
       setNotesError('Failed to load notes');
@@ -68,6 +103,87 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
       setIsLoadingNotes(false);
     }
   }, [ndk]);
+  
+  // Load followers for a specific node using WebSocket subscription
+  const loadFollowersForNode = useCallback(async (nodeId: string) => {
+    if (!ndk) {
+      setError('NDK not initialized');
+      return;
+    }
+    
+    // Close any existing followers subscription for this node
+    const existingFollowersSubscription = activeSubscriptionsRef.current.get(`followers:${nodeId}`);
+    if (existingFollowersSubscription) {
+      existingFollowersSubscription.stop();
+      activeSubscriptionsRef.current.delete(`followers:${nodeId}`);
+    }
+    
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Create a live subscription for following list changes
+      const { subscription } = createFollowingSubscription(
+        nodeId,
+        // This callback is called whenever the following list changes
+        async (followingList) => {
+          console.log(`Received updated following list for ${nodeId}: ${followingList.length} users`);
+          
+          if (followingList.length === 0) {
+            return;
+          }
+          
+          // Create a copy of the current graph
+          const updatedGraph = { ...graph };
+          
+          // Add each followed user to the graph
+          for (const followedPubkey of followingList) {
+            // Check if node already exists
+            if (!updatedGraph.nodes.some(node => node.id === followedPubkey)) {
+              // Create a graph node for this user
+              const graphNode = await createNodeFromUser(followedPubkey, false, profileCache, ndk);
+              
+              // Apply trust score if available
+              const trustScore = trustScores.get(followedPubkey);
+              if (trustScore !== undefined) {
+                graphNode.trustScore = trustScore;
+              }
+              
+              // Add the node
+              updatedGraph.nodes.push(graphNode);
+            }
+            
+            // Add the edge if it doesn't exist
+            if (!updatedGraph.edges.some(edge => 
+              (edge.source === nodeId && edge.target === followedPubkey) || 
+              (edge.source === followedPubkey && edge.target === nodeId)
+            )) {
+              updatedGraph.edges.push({
+                id: `${nodeId}-${followedPubkey}`,
+                source: nodeId,
+                target: followedPubkey,
+                size: 1,
+                color: '#ccc'
+              });
+            }
+          }
+          
+          // Update the graph
+          setGraph(updatedGraph);
+        },
+        ndk
+      );
+      
+      // Store the subscription for cleanup
+      activeSubscriptionsRef.current.set(`followers:${nodeId}`, subscription);
+      
+    } catch (err) {
+      console.error(`Error loading followers for ${nodeId}:`, err);
+      setError('Failed to load followers');
+    } finally {
+      setLoading(false);
+    }
+  }, [ndk, graph, profileCache, trustScores]);
   
   // Set selected node and load its notes
   const handleSelectNode = useCallback(async (node: GraphNode | null) => {
@@ -116,32 +232,35 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
           const newStack = navigationStack.slice(0, nodeIndex + 1);
           setNavigationStack(newStack);
           
-          // Clean up graph: remove nodes that were removed from the stack and any disconnected nodes
+          // More aggressive cleanup: only keep nodes in the navigation stack and their direct connections
           setGraph(prevGraph => {
-            // Get all the nodes that should remain in the graph
+            // Get all the node IDs in the navigation stack
             const stackNodeIds = new Set(newStack.map(n => n.id));
             
-            // First, keep only the edges that connect nodes in the stack or direct connections to stack nodes
-            const relevantEdges = prevGraph.edges.filter(edge => 
-              (stackNodeIds.has(edge.source) || stackNodeIds.has(edge.target))
-            );
-            
-            // Identify all nodes that are connected to the stack nodes
-            const connectedNodeIds = new Set<string>();
-            
-            // Add all nodes in the stack
-            stackNodeIds.forEach(id => connectedNodeIds.add(id));
-            
-            // Add all nodes connected to stack nodes
-            relevantEdges.forEach(edge => {
-              connectedNodeIds.add(edge.source);
-              connectedNodeIds.add(edge.target);
+            // Step 1: Identify edges connecting stack nodes to their direct followers
+            const relevantEdges = prevGraph.edges.filter(edge => {
+              // Keep only edges where one end is in the stack
+              return stackNodeIds.has(edge.source) || stackNodeIds.has(edge.target);
             });
             
-            // Filter nodes to keep only connected ones
-            const filteredNodes = prevGraph.nodes.filter(n => 
-              connectedNodeIds.has(n.id)
-            );
+            // Step 2: Identify all nodes we want to keep
+            const keepNodeIds = new Set<string>();
+            
+            // Add all nodes in the stack
+            stackNodeIds.forEach(id => keepNodeIds.add(id));
+            
+            // Add direct connections to stack nodes
+            relevantEdges.forEach(edge => {
+              if (stackNodeIds.has(edge.source)) {
+                keepNodeIds.add(edge.target);
+              }
+              if (stackNodeIds.has(edge.target)) {
+                keepNodeIds.add(edge.source);
+              }
+            });
+            
+            // Filter nodes to keep only those in the stack or direct connections
+            const filteredNodes = prevGraph.nodes.filter(n => keepNodeIds.has(n.id));
             
             console.log(`Graph cleanup: Reduced from ${prevGraph.nodes.length} to ${filteredNodes.length} nodes`);
             
@@ -151,8 +270,14 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
             };
           });
         } else {
-          // Otherwise, add the node to the stack
+          // If adding a new node to the stack
           setNavigationStack(prevStack => [...prevStack, node]);
+          
+          // No need to clean up when adding new nodes
+          // But we should load followers for this node to show its connections
+          loadFollowersForNode(node.id).catch(err => {
+            console.error(`Error loading followers while adding to navigation stack:`, err);
+          });
         }
       }
       
@@ -162,7 +287,7 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
       setNotesError(null);
       // Don't modify the navigation stack when deselecting
     }
-  }, [loadNotesForNode, navigationStack]);
+  }, [loadNotesForNode, navigationStack, loadFollowersForNode]);
   
   // Ensure the NDK is connected to good relays and user relays
   const connectToUserRelays = useCallback(async () => {
@@ -243,6 +368,20 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
       
       console.log(`Connecting to ${relayUrls.length} relays:`, relayUrls);
       
+      // Check if we have existing connections
+      let currentConnections = 0;
+      if (ndk.pool?.relays) {
+        currentConnections = Object.values(ndk.pool.relays).filter(r => r.status === 1).length;
+      }
+      
+      console.log(`Current active relay connections: ${currentConnections}`);
+      
+      // If we already have good connections, we might not need to reconnect
+      if (currentConnections >= 3) {
+        console.log("Already have good relay connections, skipping reconnect");
+        return;
+      }
+      
       // Make sure explicitRelayUrls are set on the NDK instance
       if (!ndk.explicitRelayUrls || ndk.explicitRelayUrls.length === 0) {
         ndk.explicitRelayUrls = relayUrls;
@@ -257,21 +396,24 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
       
       // Connect to all relays
       try {
-        // Reset connections if needed by creating a fresh connect() call
-        
-        // Connect with a timeout
-        const connectPromise = ndk.connect();
-        
-        // Wait for connection with timeout
-        await Promise.race([
-          connectPromise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Connection timeout")), 5000))
-        ]).catch(err => {
-          console.warn("Connection timeout, but continuing as some relays may connect:", err);
-        });
-        
-        // Wait a bit to allow connections to establish
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Only reconnect if we have few or no connections
+        if (currentConnections < 3) {
+          console.log("Few or no connections, attempting a fresh connection to relays");
+          
+          // Connect with a timeout
+          const connectPromise = ndk.connect();
+          
+          // Wait for connection with timeout
+          await Promise.race([
+            connectPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Connection timeout")), 5000))
+          ]).catch(err => {
+            console.warn("Connection timeout, but continuing as some relays may connect:", err);
+          });
+          
+          // Wait a bit to allow connections to establish
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
         
         // Check connection status
         const connectedRelays = ndk.pool?.relays ? 
@@ -283,12 +425,17 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
           console.error("Failed to connect to any relays! Retrying with just the essential ones...");
           
           // Try one more time with just the most reliable relays
-          ndk.explicitRelayUrls = [
+          const essentialRelays = [
             'wss://relay.damus.io',
             'wss://relay.nostr.band',
             'wss://nos.lol',
             'wss://relay.current.fyi'
           ];
+          
+          console.log("Attempting connection to essential relays:", essentialRelays);
+          
+          // Update NDK's relay list
+          ndk.explicitRelayUrls = essentialRelays;
           
           await ndk.connect();
           
@@ -299,6 +446,10 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
             Object.values(ndk.pool.relays).filter(r => r.status === 1).length : 0;
             
           console.log(`After retry: connected to ${retriedConnections} relays`);
+          
+          if (retriedConnections === 0) {
+            console.error("Still failed to connect to any relays. WebSocket connections might be blocked.");
+          }
         }
       } catch (err) {
         console.error("Error connecting to relays:", err);
@@ -369,73 +520,12 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }, [ndk, connectToUserRelays]);
   
-  // Load followers for a specific node using NDK's follows() method
-  const loadFollowersForNode = async (nodeId: string) => {
-    if (!ndk) {
-      setError('NDK not initialized');
-      return;
-    }
-    
-    try {
-      setLoading(true);
-      setError(null);
-      
-      // Create NDKUser for this node
-      const ndkUser = new NDKUser({ pubkey: nodeId });
-      ndkUser.ndk = ndk;
-      
-      // Get the following list using NDK's built-in follows() method
-      const followedUsers = await ndkUser.follows();
-      console.log(`Loaded ${followedUsers.size} followings for ${nodeId}`);
-      
-      if (followedUsers.size === 0) {
-        setLoading(false);
-        return;
-      }
-      
-      // Create a copy of the current graph
-      const updatedGraph = { ...graph };
-      
-      // Add each followed user to the graph
-      for (const followedUser of followedUsers) {
-        // Create a graph node from the NDKUser
-        const graphNode = await createNodeFromUser(followedUser.pubkey, false, profileCache, ndk);
-        
-        // Apply trust score if available
-        const trustScore = trustScores.get(followedUser.pubkey);
-        if (trustScore !== undefined) {
-          graphNode.trustScore = trustScore;
-        }
-        
-        // Check if node already exists
-        if (!updatedGraph.nodes.some(node => node.id === followedUser.pubkey)) {
-          // Add the node
-          updatedGraph.nodes.push(graphNode);
-        }
-        
-        // Add the edge if it doesn't exist
-        if (!updatedGraph.edges.some(edge => 
-          (edge.source === nodeId && edge.target === followedUser.pubkey) || 
-          (edge.source === followedUser.pubkey && edge.target === nodeId)
-        )) {
-          updatedGraph.edges.push({
-            id: `${nodeId}-${followedUser.pubkey}`,
-            source: nodeId,
-            target: followedUser.pubkey,
-            size: 1,
-            color: '#ccc'
-          });
-        }
-      }
-      
-      setGraph(updatedGraph);
-    } catch (err) {
-      console.error(`Error loading followers for ${nodeId}:`, err);
-      setError('Failed to load followers');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Handle cleaning up subscriptions on unmount or when the user changes
+  useEffect(() => {
+    return () => {
+      cleanupSubscriptions();
+    };
+  }, [cleanupSubscriptions, user]);
   
   // Initialize the graph when user logs in
   useEffect(() => {
@@ -444,6 +534,7 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
         setGraph({ nodes: [], edges: [] });
         setCurrentUserPubkey(null);
         setNavigationStack([]); // Clear navigation stack
+        cleanupSubscriptions(); // Clean up any active subscriptions
         return;
       }
       
@@ -470,28 +561,39 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
         const initialGraph = await initializeGraph(user, ndk);
         setGraph(initialGraph);
         
-        // Load the user's following list
-        try {
-          await loadFollowersForNode(user.pubkey);
-        } catch (error) {
-          console.error("Error loading followers, but continuing:", error);
-        }
-        
-        // Load web of trust scores
-        try {
-          await loadWebOfTrustScores(user.pubkey);
-        } catch (error) {
-          console.error("Error loading trust scores, but continuing:", error);
-        }
-        
-        // Select the current user by default
+        // Find the current user node
         const currentUserNode = initialGraph.nodes.find(node => node.id === user.pubkey);
+        
         if (currentUserNode) {
+          // Set selected node and initialize navigation stack with current user
           setSelectedNode(currentUserNode);
-          // Initialize navigation stack with current user
           setNavigationStack([currentUserNode]);
+          
+          // Load the user's following list
+          try {
+            console.log("Loading followers for current user");
+            await loadFollowersForNode(user.pubkey);
+          } catch (error) {
+            console.error("Error loading followers, but continuing:", error);
+          }
+          
+          // Load web of trust scores
+          try {
+            console.log("Loading web of trust scores");
+            await loadWebOfTrustScores(user.pubkey);
+          } catch (error) {
+            console.error("Error loading trust scores, but continuing:", error);
+          }
+          
           // Load notes for the current user
-          await loadNotesForNode(user.pubkey);
+          try {
+            console.log("Loading notes for current user");
+            await loadNotesForNode(user.pubkey);
+          } catch (error) {
+            console.error("Error loading notes, but continuing:", error);
+          }
+        } else {
+          console.error("Could not find current user node in initial graph");
         }
       } catch (err) {
         console.error('Error loading initial graph:', err);
@@ -502,7 +604,7 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
     };
     
     loadInitialGraph();
-  }, [user, ndk, loadNotesForNode, connectToUserRelays, loadWebOfTrustScores]);
+  }, [user, ndk, loadNotesForNode, loadFollowersForNode, loadWebOfTrustScores, cleanupSubscriptions]);
   
   // Create context value with useMemo to avoid unnecessary rerenders
   const contextValue = useMemo(() => ({
@@ -525,6 +627,7 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
     handleSelectNode,
     loading,
     error,
+    loadFollowersForNode,
     currentUserPubkey,
     userNotes,
     isLoadingNotes,
