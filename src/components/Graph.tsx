@@ -148,6 +148,7 @@ export const GraphVisualization = () => {
   useEffect(() => {
     console.log("Running D3 graph visualization effect");
     
+    // Skip recreating graph if there are no changes that would affect it
     if (!svgRef.current || !containerRef.current || graphData.nodes.length === 0) {
       console.warn("Skipping D3 visualization - missing refs or graph data", {
         hasSvgRef: !!svgRef.current,
@@ -157,9 +158,68 @@ export const GraphVisualization = () => {
       return;
     }
     
+    // Store a reference to help with cleanup
+    const svgElement = svgRef.current;
+    const containerElement = containerRef.current;
+    
+    // Add a simple check to avoid re-rendering if nothing important changed
+    // This allows minor state changes without triggering a full graph rebuild
+    const existingNodeIds = new Set();
+    
+    // Check if we have similar graph content already rendered
+    let existingNodeCount = 0;
+    d3.select(svgElement).selectAll('g.node').each(function() {
+      existingNodeCount++;
+      const nodeId = d3.select(this).attr('data-id');
+      if (nodeId) {
+        existingNodeIds.add(nodeId);
+      }
+    });
+    
+    // Check if we already have a graph with the same nodes (avoid full re-render)
+    const sameNodeCount = existingNodeCount === graphData.nodes.length;
+    const sameNodes = sameNodeCount && 
+      graphData.nodes.every(node => existingNodeIds.has(node.id));
+    
+    if (sameNodes && existingNodeCount > 0) {
+      console.log("Skipping full graph rebuild - nodes haven't changed");
+      
+      // Just update selection state without rebuilding the entire graph
+      if (selectedNode) {
+        const selectedNodes = d3.select(svgElement)
+          .selectAll('g.node')
+          .filter(d => (d as SimNode).id === selectedNode.id);
+        
+        // Remove previous selections
+        d3.select(svgElement).selectAll('.selection-indicator').remove();
+        d3.select(svgElement).selectAll('circle[stroke="#FF5722"]')
+          .attr("stroke", d => (d as SimNode).isCurrentUser ? "#FFC107" : "#fff")
+          .attr("stroke-width", d => (d as SimNode).isCurrentUser ? 3 : 1.5);
+        
+        // Apply new selection
+        if (selectedNodes.size() > 0) {
+          selectedNodes.select("circle")
+            .attr("stroke", "#FF5722")
+            .attr("stroke-width", 3);
+          
+          selectedNodes.append("circle")
+            .attr("r", 20)
+            .attr("fill", "none")
+            .attr("stroke", "#FF5722")
+            .attr("stroke-width", 2)
+            .attr("stroke-dasharray", "3,3")
+            .attr("class", "selection-indicator");
+        }
+      }
+      
+      return;
+    }
+    
+    // Continue with the regular graph creation logic
+    
     // Store the current node positions from existing graph
     const nodePositions = new Map<string, {x: number, y: number}>();
-    d3.select(svgRef.current).selectAll('g.node').each(function() {
+    d3.select(svgElement).selectAll('g.node').each(function() {
       const node = d3.select(this);
       const nodeId = node.attr('data-id');
       const transform = node.attr('transform');
@@ -175,10 +235,10 @@ export const GraphVisualization = () => {
     });
     
     // Clear any existing graph
-    d3.select(svgRef.current).selectAll("*").remove();
+    d3.select(svgElement).selectAll("*").remove();
     
-    const width = containerRef.current.clientWidth;
-    const height = containerRef.current.clientHeight;
+    const width = containerElement.clientWidth;
+    const height = containerElement.clientHeight;
     
     console.log("Container dimensions for D3:", {width, height});
     
@@ -220,7 +280,7 @@ export const GraphVisualization = () => {
     
     try {
       // Create the SVG elements
-      const svg = d3.select(svgRef.current)
+      const svg = d3.select(svgElement)
         .attr("width", width)
         .attr("height", height)
         .attr("viewBox", [0, 0, width, height]);

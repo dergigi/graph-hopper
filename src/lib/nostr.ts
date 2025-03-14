@@ -195,7 +195,25 @@ export const createNotesSubscription = (
     
     // Call the optional callback if provided
     if (onEvent) {
-      onEvent(event);
+      // Using setTimeout for a simple debounce
+      // This prevents rapid successive updates that could cause re-render loops
+      if (debounceTimerRef.current !== null) {
+        clearTimeout(debounceTimerRef.current);
+      }
+      debounceTimerRef.current = setTimeout(() => {
+        onEvent(event);
+      }, 300); // 300ms debounce delay
+    }
+  });
+  
+  // Create a ref to store the debounce timer
+  const debounceTimerRef: { current: NodeJS.Timeout | null } = { current: null };
+  
+  // Make sure to clear the timer on cleanup
+  subscription.on('close', () => {
+    if (debounceTimerRef.current !== null) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
     }
   });
   
@@ -230,13 +248,24 @@ export const createFollowingSubscription = (
   // Create a subscription
   const subscription = ndkToUse.subscribe(filter);
   
+  // Keep track of the last timestamp we've seen
+  let lastEventTimestamp = 0;
+  
+  // Create a ref to store the debounce timer
+  const followingDebounceTimer: { current: NodeJS.Timeout | null } = { current: null };
+  
   // Process events and update following list when new contact lists are published
   subscription.on('event', (event: NDKEvent) => {
     // Check if this is a newer event than what we've seen
-    const isNewerEvent = event.created_at && (!subscription.lastEventTimestamp || 
-      event.created_at > subscription.lastEventTimestamp);
+    const isNewerEvent = event.created_at && (!lastEventTimestamp || 
+      event.created_at > lastEventTimestamp);
     
     if (isNewerEvent) {
+      // Update the last event timestamp
+      if (event.created_at) {
+        lastEventTimestamp = event.created_at;
+      }
+      
       // Extract the pubkeys from the tags
       const following: string[] = [];
       for (const tag of event.tags) {
@@ -248,12 +277,15 @@ export const createFollowingSubscription = (
       // Update the current following list
       currentFollowing = following;
       
-      // Update last event timestamp
-      subscription.lastEventTimestamp = event.created_at;
-      
       // Call the optional callback if provided
       if (onUpdate) {
-        onUpdate(following);
+        // Debounce the callback to prevent excessive re-renders
+        if (followingDebounceTimer.current !== null) {
+          clearTimeout(followingDebounceTimer.current);
+        }
+        followingDebounceTimer.current = setTimeout(() => {
+          onUpdate(following);
+        }, 300); // 300ms debounce
       }
     }
   });
@@ -283,12 +315,22 @@ export const createFollowingSubscription = (
       currentFollowing = following;
       
       // Update last event timestamp
-      subscription.lastEventTimestamp = latestEvent.created_at;
+      if (latestEvent.created_at) {
+        lastEventTimestamp = latestEvent.created_at;
+      }
       
       // Call the optional callback if provided
       if (onUpdate) {
         onUpdate(following);
       }
+    }
+  });
+  
+  // Make sure to clear the timer on cleanup
+  subscription.on('close', () => {
+    if (followingDebounceTimer.current !== null) {
+      clearTimeout(followingDebounceTimer.current);
+      followingDebounceTimer.current = null;
     }
   });
   

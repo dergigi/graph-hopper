@@ -5,7 +5,7 @@ import { GraphData, GraphNode, GraphContextType, NostrProfile } from '../types';
 import { initializeGraph, createNodeFromUser } from '../lib/graph';
 import { getUserNotes, createNotesSubscription, createFollowingSubscription } from '../lib/nostr';
 import { useAuth } from './AuthProvider';
-import { NDKEvent, NDKUser, NDKSubscription } from '@nostr-dev-kit/ndk';
+import { NDKEvent, NDKSubscription } from '@nostr-dev-kit/ndk';
 
 // Create the graph context
 const GraphContext = createContext<GraphContextType>({
@@ -80,7 +80,7 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
         nodeId, 
         20, 
         // This callback is called whenever a new note is received
-        (event) => {
+        () => {
           // Update the notes state with the latest notes array
           setUserNotes([...notes]);
         },
@@ -177,6 +177,11 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
   
   // Set selected node and load its notes
   const handleSelectNode = useCallback(async (node: GraphNode | null) => {
+    // Skip if it's the same node to prevent unnecessary updates
+    if (selectedNode?.id === node?.id) {
+      return;
+    }
+    
     setSelectedNode(node);
     
     if (node) {
@@ -263,14 +268,22 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
           // If adding a new node to the stack
           setNavigationStack(prevStack => [...prevStack, node]);
           
-          // No need to clean up when adding new nodes
-          // But we should load followers for this node to show its connections
-          loadFollowersForNode(node.id).catch(err => {
-            console.error(`Error loading followers while adding to navigation stack:`, err);
-          });
+          // Load followers ONLY if node is not already loaded
+          // This check helps prevent unnecessary data fetching
+          const hasFollowersLoaded = graphRef.current.edges.some(
+            edge => edge.source === node.id || edge.target === node.id
+          );
+          
+          if (!hasFollowersLoaded) {
+            // Only load followers if we haven't already loaded connections for this node
+            loadFollowersForNode(node.id).catch(err => {
+              console.error(`Error loading followers while adding to navigation stack:`, err);
+            });
+          }
         }
       }
       
+      // Load notes for the selected node
       await loadNotesForNode(node.id);
     } else {
       setUserNotes([]);
@@ -382,16 +395,6 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
           // Set selected node and initialize navigation stack with current user
           setSelectedNode(currentUserNode);
           setNavigationStack([currentUserNode]);
-          
-          // Load the user's following list - DO NOT await here to prevent initial load cycles
-          loadFollowersForNode(user.pubkey).catch(error => {
-            console.error("Error loading followers, but continuing:", error);
-          });
-          
-          // Load notes for the current user
-          loadNotesForNode(user.pubkey).catch(error => {
-            console.error("Error loading notes, but continuing:", error);
-          });
         } else {
           console.error("Could not find current user node in initial graph");
         }
@@ -410,6 +413,22 @@ export const GraphProvider = ({ children }: { children: React.ReactNode }) => {
       cleanupSubscriptions();
     };
   }, [user, ndk, connectToRelays, cleanupSubscriptions]);
+  
+  // Separate effect for loading followers and notes to avoid circular dependencies
+  useEffect(() => {
+    // Only load data if we have a user pubkey and NDK
+    if (!currentUserPubkey || !ndk) return;
+    
+    // Load the user's following list
+    loadFollowersForNode(currentUserPubkey).catch(error => {
+      console.error("Error loading followers, but continuing:", error);
+    });
+    
+    // Load notes for the current user
+    loadNotesForNode(currentUserPubkey).catch(error => {
+      console.error("Error loading notes, but continuing:", error);
+    });
+  }, [currentUserPubkey, ndk, loadFollowersForNode, loadNotesForNode]);
   
   // Create context value with useMemo to avoid unnecessary rerenders
   const contextValue = useMemo(() => ({
